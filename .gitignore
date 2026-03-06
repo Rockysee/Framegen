@@ -1,0 +1,9 @@
+node_modules/
+client/node_modules/
+client/dist/
+.env
+storage/videos/
+storage/db.json
+*.log
+.DS_Store
+*.tar.gz
