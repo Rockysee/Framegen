@@ -11,7 +11,8 @@
     "client": "cd client && npm run dev",
     "build": "cd client && npm install && npm run build",
     "start": "NODE_ENV=production node server/index.js",
-    "install:all": "npm install && cd client && npm install"
+    "install:all": "npm install && cd client && npm install",
+    "debug": "node scripts/debug.js"
   },
   "dependencies": {
     "concurrently": "^8.2.2",
