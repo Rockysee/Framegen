@@ -1,12 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Only run in remote Claude Code on the web sessions
-if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
-  exit 0
-fi
+# Use CLAUDE_PROJECT_DIR if set (remote), otherwise fall back to local path
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-/users/hemantithackeray/desktop/Hemant's Stack/framegen/framegen}"
 
-cd "$CLAUDE_PROJECT_DIR"
+cd "$PROJECT_DIR"
 
 # Install server dependencies
 echo "Installing server dependencies..."
