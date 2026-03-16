@@ -353,6 +353,255 @@ app.delete("/api/projects/:id", (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── debugger API ─────────────────────────────────────────────
+import { execSync as execSyncRaw } from "child_process";
+
+async function runDebugChecks() {
+  const checks = {};
+
+  // env vars
+  checks.env = {
+    label: "Environment Variables",
+    items: [
+      { name: "ANTHROPIC_API_KEY", ok: !!process.env.ANTHROPIC_API_KEY,
+        value: process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.slice(0,12)+"..." : null,
+        fix: "Add ANTHROPIC_API_KEY to your .env file" },
+      { name: "REPLICATE_API_KEY", ok: !!process.env.REPLICATE_API_KEY,
+        value: process.env.REPLICATE_API_KEY ? process.env.REPLICATE_API_KEY.slice(0,8)+"..." : null,
+        warn: !process.env.REPLICATE_API_KEY, fix: "Add REPLICATE_API_KEY — get it at replicate.com" },
+      { name: "FAL_API_KEY",       ok: !!process.env.FAL_API_KEY,
+        value: process.env.FAL_API_KEY ? process.env.FAL_API_KEY.slice(0,8)+"..." : null,
+        warn: true, fix: "Optional fallback — only needed if not using Replicate" },
+      { name: "PORT",    ok: true, value: String(process.env.PORT || 3002) },
+      { name: "NODE_ENV",ok: true, value: process.env.NODE_ENV || "development" },
+    ],
+  };
+
+  // deps
+  const serverMods = existsSync(join(ROOT, "node_modules"));
+  const clientMods = existsSync(join(ROOT, "client", "node_modules"));
+  let ffmpegVer = null, ffmpegOk = false;
+  try { const r = execSyncRaw("ffmpeg -version 2>&1").toString(); ffmpegVer = r.split("\n")[0].replace("ffmpeg version","").trim().split(" ")[0]; ffmpegOk = true; } catch {}
+  checks.deps = {
+    label: "Dependencies & Tools",
+    items: [
+      { name: "Node.js",              ok: true, value: process.version },
+      { name: "server node_modules",  ok: serverMods, fix: "Run: npm install" },
+      { name: "client node_modules",  ok: clientMods, fix: "Run: npm install --prefix client" },
+      { name: "FFmpeg",               ok: ffmpegOk, value: ffmpegVer,
+        fix: "macOS: brew install ffmpeg  |  Ubuntu: sudo apt install ffmpeg" },
+    ],
+  };
+
+  // storage
+  const storagePath = existsSync(STORAGE);
+  const videosPath  = existsSync(VIDS);
+  let dbProjects = null, dbOk = false, dbWarn = false;
+  if (existsSync(DB_FILE)) {
+    try { dbProjects = readDB().projects.length; dbOk = true; } catch { dbWarn = true; }
+  }
+  checks.storage = {
+    label: "Storage",
+    items: [
+      { name: "storage/",        ok: storagePath, warn: !storagePath, fix: "Auto-created on first server start" },
+      { name: "storage/videos/", ok: videosPath,  warn: !videosPath,  fix: "Auto-created on first server start" },
+      { name: "storage/db.json", ok: dbOk || !existsSync(DB_FILE),
+        warn: dbWarn || !existsSync(DB_FILE),
+        value: dbOk ? `${dbProjects} project(s)` : existsSync(DB_FILE) ? "corrupted!" : "not yet created",
+        fix: dbWarn ? "db.json is corrupted — delete it to reset" : null },
+    ],
+  };
+
+  // anthropic API
+  let anthropicOk = false, anthropicMsg = null;
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 16, messages: [{ role: "user", content: "Reply: OK" }] }),
+      });
+      if (r.ok) { const d = await r.json(); anthropicOk = true; anthropicMsg = d.content?.[0]?.text?.trim(); }
+      else { const e = await r.json().catch(()=>{}); anthropicMsg = `HTTP ${r.status}: ${e?.error?.message||"unknown"}`; }
+    } catch (e) { anthropicMsg = `Network error: ${e.message}`; }
+  }
+  checks.anthropic = {
+    label: "Anthropic API",
+    items: [
+      process.env.ANTHROPIC_API_KEY
+        ? { name: "API key valid & reachable", ok: anthropicOk, value: anthropicOk ? `Claude replied: "${anthropicMsg}"` : anthropicMsg, fix: anthropicOk ? null : "Check your ANTHROPIC_API_KEY in .env" }
+        : { name: "ANTHROPIC_API_KEY", ok: false, fix: "Set ANTHROPIC_API_KEY in .env — get it at console.anthropic.com" },
+    ],
+  };
+
+  // replicate API
+  let replicateOk = false, replicateMsg = null;
+  if (process.env.REPLICATE_API_KEY) {
+    try {
+      const r = await fetch("https://api.replicate.com/v1/account", {
+        headers: { Authorization: `Bearer ${process.env.REPLICATE_API_KEY}` },
+      });
+      if (r.ok) { const d = await r.json(); replicateOk = true; replicateMsg = `Authenticated as: ${d.username||d.name||"unknown"}`; }
+      else { const e = await r.json().catch(()=>{}); replicateMsg = `HTTP ${r.status}: ${e?.detail||"invalid key?"}`; }
+    } catch (e) { replicateMsg = `Network error: ${e.message}`; }
+  }
+  checks.replicate = {
+    label: "Replicate API",
+    items: [
+      process.env.REPLICATE_API_KEY
+        ? { name: "API key valid & reachable", ok: replicateOk, value: replicateMsg, warn: !replicateOk, fix: replicateOk ? null : "Check your REPLICATE_API_KEY in .env" }
+        : { name: "REPLICATE_API_KEY", ok: false, warn: true, fix: "Optional but needed for video generation — get at replicate.com" },
+    ],
+  };
+
+  return checks;
+}
+
+app.get("/api/debug", async (_req, res) => {
+  try { res.json(await runDebugChecks()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/debug", (_req, res) => {
+  res.setHeader("Content-Type", "text/html");
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Framegen Debugger</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#080808;color:#ede9e3;font-family:'Courier New',monospace;padding:32px;min-height:100vh}
+  h1{color:#e8ff6e;font-size:1.4rem;margin-bottom:4px;letter-spacing:2px}
+  .sub{color:#4a4440;font-size:.8rem;margin-bottom:32px}
+  .section{background:#0f0f0f;border:1px solid #222;border-radius:8px;margin-bottom:16px;overflow:hidden}
+  .section-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #1c1c1c;background:#111}
+  .section-title{font-size:.85rem;font-weight:bold;color:#4da6ff;letter-spacing:1px}
+  .section-status{font-size:.75rem;padding:2px 8px;border-radius:4px;font-weight:bold}
+  .status-ok{background:#1a3a1a;color:#4dff9e}
+  .status-warn{background:#3a3a0a;color:#e8ff6e}
+  .status-fail{background:#3a0a0a;color:#ff5555}
+  .status-loading{background:#1a1a2a;color:#4da6ff}
+  .item{display:flex;align-items:flex-start;gap:12px;padding:10px 16px;border-bottom:1px solid #141414}
+  .item:last-child{border-bottom:none}
+  .dot{margin-top:2px;font-size:1rem;flex-shrink:0}
+  .dot-ok{color:#4dff9e}
+  .dot-warn{color:#e8ff6e}
+  .dot-fail{color:#ff5555}
+  .dot-loading{color:#4da6ff;animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .item-body{flex:1;min-width:0}
+  .item-name{font-size:.82rem;color:#ede9e3}
+  .item-value{font-size:.75rem;color:#4dff9e;margin-top:2px;word-break:break-all}
+  .item-fix{font-size:.75rem;color:#8a8078;margin-top:3px}
+  .item-fix span{color:#e8ff6e}
+  .actions{display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap}
+  button{background:#1c1c1c;color:#ede9e3;border:1px solid #2e2e2e;padding:8px 16px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:.8rem;transition:all .15s}
+  button:hover{background:#252525;border-color:#4da6ff;color:#4da6ff}
+  button.primary{background:#1a2a0a;border-color:#e8ff6e;color:#e8ff6e}
+  button.primary:hover{background:#252f0a}
+  .spinner{display:inline-block;margin-right:6px}
+  .timestamp{color:#4a4440;font-size:.72rem;margin-bottom:16px}
+  a{color:#4da6ff;text-decoration:none}
+  a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<h1>⚙ FRAMEGEN DEBUGGER</h1>
+<div class="sub">Self-diagnostic dashboard — ${SERVER_URL}</div>
+
+<div class="actions">
+  <button class="primary" onclick="runAll()">▶ Run All Checks</button>
+  <button onclick="location.href='/'">← Back to App</button>
+</div>
+
+<div class="timestamp" id="ts"></div>
+<div id="results"></div>
+
+<script>
+const SECTIONS = {
+  env:      "Environment Variables",
+  deps:     "Dependencies & Tools",
+  storage:  "Storage",
+  anthropic:"Anthropic API",
+  replicate:"Replicate API",
+};
+
+function renderSkeleton() {
+  const el = document.getElementById("results");
+  el.innerHTML = Object.entries(SECTIONS).map(([id, label]) => \`
+    <div class="section" id="sec-\${id}">
+      <div class="section-header">
+        <span class="section-title">\${label}</span>
+        <span class="section-status status-loading">CHECKING…</span>
+      </div>
+      <div class="item">
+        <div class="dot dot-loading">●</div>
+        <div class="item-body"><div class="item-name">Running check…</div></div>
+      </div>
+    </div>
+  \`).join("");
+}
+
+function dotClass(item) {
+  if (item.ok) return "dot-ok";
+  if (item.warn) return "dot-warn";
+  return "dot-fail";
+}
+function dotChar(item) {
+  if (item.ok) return "✓";
+  if (item.warn) return "⚠";
+  return "✗";
+}
+function sectionStatus(items) {
+  if (items.every(i => i.ok)) return ["status-ok","OK"];
+  if (items.some(i => !i.ok && !i.warn)) return ["status-fail","ISSUES"];
+  return ["status-warn","WARNINGS"];
+}
+
+function renderSection(id, data) {
+  const [cls, label] = sectionStatus(data.items);
+  const itemsHtml = data.items.map(item => \`
+    <div class="item">
+      <div class="dot \${dotClass(item)}">\${dotChar(item)}</div>
+      <div class="item-body">
+        <div class="item-name">\${item.name}</div>
+        \${item.value ? \`<div class="item-value">\${item.value}</div>\` : ""}
+        \${item.fix   ? \`<div class="item-fix"><span>Fix:</span> \${item.fix}</div>\` : ""}
+      </div>
+    </div>
+  \`).join("");
+  document.getElementById("sec-"+id).innerHTML = \`
+    <div class="section-header">
+      <span class="section-title">\${data.label}</span>
+      <span class="section-status \${cls}">\${label}</span>
+    </div>
+    \${itemsHtml}
+  \`;
+}
+
+async function runAll() {
+  renderSkeleton();
+  document.getElementById("ts").textContent = "Last run: " + new Date().toLocaleTimeString();
+  try {
+    const res = await fetch("/api/debug");
+    const data = await res.json();
+    for (const [id, section] of Object.entries(data)) {
+      renderSection(id, section);
+    }
+  } catch (e) {
+    document.getElementById("results").innerHTML =
+      \`<div style="color:#ff5555;padding:16px">Failed to fetch diagnostics: \${e.message}</div>\`;
+  }
+}
+
+runAll();
+</script>
+</body>
+</html>`);
+});
+
 // ─── production: serve built client ───────────────────────────
 const DIST = join(ROOT, "client", "dist");
 if (process.env.NODE_ENV === "production" && existsSync(DIST)) {
