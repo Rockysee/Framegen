@@ -509,7 +509,7 @@ app.get("/debug", (_req, res) => {
 </head>
 <body>
 <h1>⚙ FRAMEGEN DEBUGGER</h1>
-<div class="sub">Self-diagnostic dashboard — ${SERVER_URL}</div>
+<div class="sub">Self-diagnostic dashboard — http://localhost:${PORT}</div>
 
 <div class="actions">
   <button class="primary" onclick="runAll()">▶ Run All Checks</button>
